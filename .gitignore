@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Project specific outputs and data
+output_figures/
+tracks.xlsx
+*.pdf
+
+# OS generated files
+.DS_Store
+Thumbs.db
