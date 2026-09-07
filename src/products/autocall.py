@@ -4,7 +4,15 @@ Autocall & Phoenix Structured Product Engine.
 
 from dataclasses import dataclass, field
 import numpy as np
-import pandas as pd
+
+from src.products.base import BaseProductResult
+from src.products.schedule_utils import (
+    FREQ_TO_N_PER_YEAR,
+    build_observation_schedule,
+    map_dates_to_steps,
+    resolve_indices,
+    relative_paths,
+)
 
 
 @dataclass
@@ -29,19 +37,12 @@ class AutocallParams:
 
     def __post_init__(self):
         if not self.observation_dates:
-            freq_map = {
-                "monthly": 12,
-                "quarterly": 4,
-                "semi-annual": 2,
-                "annual": 1,
-            }
-            n_per_year = freq_map.get(str(self.obs_freq).lower(), 4)
-            dt_step = 1.0 / n_per_year
-            n_obs = int(round(self.maturity * n_per_year))
-            self.observation_dates = [round((i + 1) * dt_step, 6) for i in range(n_obs)]
+            self.observation_dates = build_observation_schedule(
+                self.maturity, self.obs_freq, default_freq="quarterly"
+            )
 
 
-class AutocallResult:
+class AutocallResult(BaseProductResult):
     def __init__(
         self,
         params: AutocallParams,
@@ -53,37 +54,23 @@ class AutocallResult:
         loss_amounts: np.ndarray,
         total_coupons: np.ndarray,
     ):
-        self.params = params
-        self.cashflow_matrix = cashflow_matrix  # (n_sim, n_obs)
-        self.obs_dates = obs_dates
+        super().__init__(params, cashflow_matrix, obs_dates)
+
         self.called_mask = called_mask
         self.call_times = call_times
         self.loss_mask = loss_mask
         self.loss_amounts = loss_amounts
         self.total_coupons = total_coupons
-        self.notional = params.notional
 
-        self.n_sim = cashflow_matrix.shape[0]
-        self.n_obs = cashflow_matrix.shape[1]
-
-        # Financial metrics
-        self.pv = float(np.mean(np.sum(self.cashflow_matrix, axis=1)))
-        self.price = self.pv
-        self.price_pct = (self.price / self.notional) * 100.0 if self.notional > 0 else 0.0
-
+        # Product-specific metrics
         self.prob_autocall = float(np.mean(self.called_mask))
         self.prob_capital_loss = float(np.mean(self.loss_mask))
         self.expected_capital_loss = float(np.mean(self.loss_amounts))
         called_times_subset = self.call_times[self.called_mask]
-        self.avg_autocall_time = float(np.mean(called_times_subset)) if len(called_times_subset) > 0 else float(params.maturity)
+        self.avg_autocall_time = (
+            float(np.mean(called_times_subset)) if len(called_times_subset) > 0 else float(params.maturity)
+        )
         self.avg_coupons = float(np.mean(self.total_coupons))
-
-    def cashflow_dataframe(self) -> pd.DataFrame:
-        cols = [f"t={t:.2f}y" for t in self.obs_dates]
-        return pd.DataFrame(self.cashflow_matrix, columns=cols)
-
-    def total_undiscounted_payoff(self) -> np.ndarray:
-        return np.sum(self.cashflow_matrix, axis=1)
 
     def autocall_time_distribution(self) -> dict[float, float]:
         dist = {}
@@ -127,10 +114,10 @@ class AutocallPricer:
         dates = np.array(self.params.observation_dates)
         barriers = np.full(len(dates), np.inf)
 
-        # Map step freq
-        freq_map = {"monthly": 1 / 12, "quarterly": 0.25, "semi-annual": 0.5, "annual": 1.0}
+        # Derived from the single FREQ_TO_N_PER_YEAR source of truth, instead of
+        # a second hardcoded {freq: dt} map that could silently drift out of sync.
         if isinstance(self.params.barrier_step_freq, str):
-            step_dt = freq_map.get(self.params.barrier_step_freq.lower(), 0.25)
+            step_dt = 1.0 / FREQ_TO_N_PER_YEAR.get(self.params.barrier_step_freq.lower(), 4)
         elif isinstance(self.params.barrier_step_freq, (int, float)):
             step_dt = float(self.params.barrier_step_freq)
         else:
@@ -157,21 +144,13 @@ class AutocallPricer:
         """
         n_sim, n_path_steps, n_assets = paths.shape
 
-        # Match indices
-        matched_idx = []
-        for name in self.params.index_names:
-            if name in index_names:
-                matched_idx.append(index_names.index(name))
-            else:
-                raise ValueError(f"Underlying index '{name}' not found in simulation paths.")
+        matched_idx = resolve_indices(self.params.index_names, index_names)
 
         if self.params.basket_type == "single" and len(matched_idx) != 1:
             raise ValueError(f"Single basket type requires exactly 1 index, got {len(matched_idx)}")
 
-        # Selected paths normalized to S(0)
-        # shape: (n_sim, n_path_steps, len(matched_idx))
-        s0 = paths[:, 0:1, matched_idx]
-        rel_paths = paths[:, :, matched_idx] / s0
+        # Selected paths normalized to S(0), shape: (n_sim, n_path_steps, len(matched_idx))
+        rel_paths = relative_paths(paths, matched_idx)
 
         # Basket performance across all time steps
         if self.params.basket_type == "single" or len(matched_idx) == 1:
@@ -188,7 +167,7 @@ class AutocallPricer:
         # Observation dates & indices in path
         obs_dates = self.params.observation_dates
         n_obs = len(obs_dates)
-        obs_step_indices = [min(int(round(t / dt)), n_path_steps - 1) for t in obs_dates]
+        obs_step_indices = map_dates_to_steps(obs_dates, dt, n_path_steps)
 
         # Barrier schedule
         autocall_barriers = self._get_barrier_schedule()

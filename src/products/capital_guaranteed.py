@@ -4,7 +4,9 @@ Capital Guaranteed Lookback Structured Product Engine.
 
 from dataclasses import dataclass, field
 import numpy as np
-import pandas as pd
+
+from src.products.base import BaseProductResult
+from src.products.schedule_utils import build_observation_schedule, map_dates_to_steps, resolve_index
 
 
 @dataclass
@@ -21,19 +23,12 @@ class CapitalGuaranteedParams:
 
     def __post_init__(self):
         if not self.observation_dates:
-            freq_map = {
-                "monthly": 12,
-                "quarterly": 4,
-                "semi-annual": 2,
-                "annual": 1,
-            }
-            n_per_year = freq_map.get(str(self.obs_freq).lower(), 2)
-            dt_step = 1.0 / n_per_year
-            n_obs = int(round(self.maturity * n_per_year))
-            self.observation_dates = [round((i + 1) * dt_step, 6) for i in range(n_obs)]
+            self.observation_dates = build_observation_schedule(
+                self.maturity, self.obs_freq, default_freq="semi-annual"
+            )
 
 
-class CapitalGuaranteedResult:
+class CapitalGuaranteedResult(BaseProductResult):
     def __init__(
         self,
         params: CapitalGuaranteedParams,
@@ -43,32 +38,16 @@ class CapitalGuaranteedResult:
         effective_perfs: np.ndarray,
         floor_binding_mask: np.ndarray,
     ):
-        self.params = params
-        self.cashflow_matrix = cashflow_matrix  # (n_sim, n_obs)
-        self.obs_dates = obs_dates
+        super().__init__(params, cashflow_matrix, obs_dates)
+
         self.lookback_perfs = lookback_perfs
         self.effective_perfs = effective_perfs
         self.floor_binding_mask = floor_binding_mask
-        self.notional = params.notional
 
-        self.n_sim = cashflow_matrix.shape[0]
-        self.n_obs = cashflow_matrix.shape[1]
-
-        # Metrics
-        self.pv = float(np.mean(np.sum(self.cashflow_matrix, axis=1)))
-        self.price = self.pv
-        self.price_pct = (self.price / self.notional) * 100.0 if self.notional > 0 else 0.0
-
+        # Product-specific metrics
         self.prob_floor_binding = float(np.mean(self.floor_binding_mask))
         self.avg_lookback_perf = float(np.mean(self.lookback_perfs))
         self.avg_effective_perf = float(np.mean(self.effective_perfs))
-
-    def cashflow_dataframe(self) -> pd.DataFrame:
-        cols = [f"t={t:.2f}y" for t in self.obs_dates]
-        return pd.DataFrame(self.cashflow_matrix, columns=cols)
-
-    def total_undiscounted_payoff(self) -> np.ndarray:
-        return np.sum(self.cashflow_matrix, axis=1)
 
     def summary(self) -> dict:
         return {
@@ -102,13 +81,11 @@ class CapitalGuaranteedPricer:
     def compute_payoffs(self, paths: np.ndarray, dt: float, index_names: list[str]) -> CapitalGuaranteedResult:
         n_sim, n_path_steps, n_assets = paths.shape
 
-        if self.params.index_name not in index_names:
-            raise ValueError(f"Underlying index '{self.params.index_name}' not found in simulation paths.")
-        asset_idx = index_names.index(self.params.index_name)
+        asset_idx = resolve_index(self.params.index_name, index_names)
 
         obs_dates = self.params.observation_dates
         n_obs = len(obs_dates)
-        obs_step_indices = [min(int(round(t / dt)), n_path_steps - 1) for t in obs_dates]
+        obs_step_indices = map_dates_to_steps(obs_dates, dt, n_path_steps)
 
         # Extract underlying prices at obs dates
         s0 = paths[:, 0, asset_idx]

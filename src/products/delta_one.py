@@ -4,7 +4,9 @@ Delta One Structured Product Engine.
 
 from dataclasses import dataclass, field
 import numpy as np
-import pandas as pd
+
+from src.products.base import BaseProductResult
+from src.products.schedule_utils import map_dates_to_steps, resolve_index
 
 
 @dataclass
@@ -18,10 +20,13 @@ class DeltaOneParams:
 
     def __post_init__(self):
         if not self.observation_dates:
+            # Delta One has a single cashflow at maturity, not a regular
+            # frequency-based schedule, so this stays product-specific
+            # rather than going through build_observation_schedule.
             self.observation_dates = [round(float(self.maturity), 6)]
 
 
-class DeltaOneResult:
+class DeltaOneResult(BaseProductResult):
     def __init__(
         self,
         params: DeltaOneParams,
@@ -30,30 +35,14 @@ class DeltaOneResult:
         index_perfs: np.ndarray,
         loss_mask: np.ndarray,
     ):
-        self.params = params
-        self.cashflow_matrix = cashflow_matrix  # (n_sim, 1)
-        self.obs_dates = obs_dates
+        super().__init__(params, cashflow_matrix, obs_dates)
+
         self.index_perfs = index_perfs
         self.loss_mask = loss_mask
-        self.notional = params.notional
 
-        self.n_sim = cashflow_matrix.shape[0]
-        self.n_obs = cashflow_matrix.shape[1]
-
-        # Metrics
-        self.pv = float(np.mean(np.sum(self.cashflow_matrix, axis=1)))
-        self.price = self.pv
-        self.price_pct = (self.price / self.notional) * 100.0 if self.notional > 0 else 0.0
-
+        # Product-specific metrics
         self.avg_index_perf = float(np.mean(self.index_perfs))
         self.prob_loss = float(np.mean(self.loss_mask))
-
-    def cashflow_dataframe(self) -> pd.DataFrame:
-        cols = [f"t={t:.2f}y" for t in self.obs_dates]
-        return pd.DataFrame(self.cashflow_matrix, columns=cols)
-
-    def total_undiscounted_payoff(self) -> np.ndarray:
-        return np.sum(self.cashflow_matrix, axis=1)
 
     def summary(self) -> dict:
         return {
@@ -83,11 +72,11 @@ class DeltaOnePricer:
     def compute_payoffs(self, paths: np.ndarray, dt: float, index_names: list[str]) -> DeltaOneResult:
         n_sim, n_path_steps, n_assets = paths.shape
 
-        if self.params.index_name not in index_names:
-            raise ValueError(f"Underlying index '{self.params.index_name}' not found in simulation paths.")
-        asset_idx = index_names.index(self.params.index_name)
+        asset_idx = resolve_index(self.params.index_name, index_names)
 
-        maturity_step = min(int(round(self.params.maturity / dt)), n_path_steps - 1)
+        obs_dates = self.params.observation_dates
+        maturity_step = map_dates_to_steps(obs_dates, dt, n_path_steps)[0]
+
         s0 = paths[:, 0, asset_idx]
         st = paths[:, maturity_step, asset_idx]
 
@@ -98,7 +87,6 @@ class DeltaOnePricer:
         cashflows[:, 0] = payoffs
 
         loss_mask = payoffs < self.params.notional
-        obs_dates = [round(float(self.params.maturity), 6)]
 
         return DeltaOneResult(
             params=self.params,
