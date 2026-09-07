@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Any
 
-# Colorblind-safe color palette suitable for academic publications
 _ACADEMIC_COLORS = [
     "#0072B2",  # Blue
     "#D55E00",  # Vermilion
@@ -46,7 +45,6 @@ def _apply_academic_layout(fig: go.Figure, title: str, x_title: str, y_title: st
         margin=dict(l=70, r=160, t=60, b=60)
     )
     
-    # Enforce standard scientific axis styling (mirrored borders, outside ticks)
     axis_styling = dict(
         showgrid=True, gridwidth=0.5, gridcolor="#E5E5E5",
         showline=True, linewidth=1, linecolor="black", mirror=True,
@@ -184,7 +182,6 @@ def plot_correlation_matrix(corr_df: pd.DataFrame) -> go.Figure:
         y_title=""
     )
     
-    # Heatmaps require specific layout overrides to look professional
     fig.update_layout(
         yaxis=dict(autorange="reversed"),  # Matrix ordering convention
         width=650, height=600,
@@ -276,7 +273,7 @@ def plot_cvar_efficient_frontier(
         mode='markers',
         marker=dict(
             size=4,
-            color='rgba(180, 180, 180, 0.4)', 
+            color='rgba(80, 80, 80, 0.6)', 
             line=dict(width=0)
         ),
         name='Evaluated Portfolios',
