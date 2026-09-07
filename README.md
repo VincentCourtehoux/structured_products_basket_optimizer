@@ -7,8 +7,6 @@
 ## Overview
 This repository contains a quantitative pricing and optimization engine designed for multi-asset structured products. It simulates market environments using Correlated Geometric Brownian Motion (GBM), evaluates structured products (e.g., Autocalls, Capital Guaranteed products), and optimizes portfolio allocation by maximizing the Conditional Value-at-Risk (CVaR) for a given target Expected Internal Rate of Return (IRR).
 
-The engine is built for performance, utilizing highly vectorized NumPy operations, including a custom vectorized Newton-Raphson IRR solver, and produces publication-ready visualizations.
-
 ## Key Features
 - **Synthetic Decrement Indices:** Reconstructs synthetic decrement indices (percentage or fixed points) from historical Total Return (TR) market data.
 - **Correlated Market Simulation:** Generates Monte Carlo price paths using GBM, incorporating historical drift, volatility, and Cholesky decomposition with automatic Tikhonov regularization.
@@ -21,7 +19,7 @@ The engine is built for performance, utilizing highly vectorized NumPy operation
 The pipeline executes in four distinct phases:
 
 ### 1. Data Ingestion & Decrement Construction
-Standard Price Return indices do not reflect true performance, and Total Return indices are heavily impacted by dividend taxation. The engine ingests TR indices (e.g., `^SP500TR`, `^GDAXI`) and applies a synthetic backward decrement.
+Standard Price Return indices do not reflect true performance, and Total Return indices are heavily impacted by dividend taxation. The engine ingests TR indices (e.g., `^SP500TR`) and applies a synthetic backward decrement.
 * **Mechanism:** Subtracts a fixed synthetic dividend (in percentage or index points) linearly on a daily basis from the historical TR series.
 
 ### 2. Market Calibration & Monte Carlo Simulation
@@ -84,9 +82,9 @@ from src.engine.products_config import get_default_preset
 
 product_configs = [
     get_default_preset("p1", index="¨SP500TR", available_indices=index_names), # Step-down Autocall
-    get_default_preset("p2", index=None, available_indices=index_names), # ATM Autocall
-    get_default_preset("p3", index=None, available_indices=index_names), # Capital Guaranteed
-    get_default_preset("p4", index=None, available_indices=index_names), # Delta One Tracker
+    get_default_preset("p2", available_indices=index_names), # ATM Autocall
+    get_default_preset("p3", available_indices=index_names), # Capital Guaranteed
+    get_default_preset("p4", available_indices=index_names), # Delta One Tracker
 ]
 ```
 
@@ -113,12 +111,7 @@ results = run_basket_optimization(
 )
 ```
 
-For full execution and academic PDF generation, refer to main.py.
-
-
-
-
-
+For full execution refer to main.py.
 
 
 ## Project Architecture
