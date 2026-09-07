@@ -14,7 +14,6 @@ env/
 # Project specific outputs and data
 output_figures/
 tracks.xlsx
-*.pdf
 
 # OS generated files
 .DS_Store
