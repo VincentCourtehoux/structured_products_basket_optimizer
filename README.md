@@ -51,40 +51,42 @@ Use the built-in retriever to pull Total Return indices from Yahoo Finance and a
 ```python
 from src.data.retriever import fetch_historical_tracks, apply_backward_decrement, export_results_to_excel
 
-raw_tracks = fetch_historical_tracks(["^SP500TR", "^GDAXI"], "2015-01-01", "2026-08-31")
+raw_tracks = fetch_historical_tracks(["^SP500TR", "^RUTTR"], "2015-01-01", "2026-08-31")
 dec_tracks = apply_backward_decrement(raw_tracks, decrement_value=50.0, decrement_type="points")
 export_results_to_excel(dec_tracks, "tracks.xlsx")
 ```
 
 **Option B: Custom Excel File**
-Directly plug in your own tracks.xlsx file. The engine requires exactly one sheet per index, where the first column is the Date and the second column is the Price.
+Directly plug in your own `tracks.xlsx` file. The engine requires exactly one sheet per index, where the first column is the Date and the second column is the Price.
 
 ### Step 2: Monte Carlo Simulation Setup
-Once tracks.xlsx is ready, trigger the simulation engine. This calibrates historical parameters and caches the correlated paths.
+Once `tracks.xlsx` is ready, trigger the simulation engine. This calibrates historical parameters and caches the correlated paths.
 
 ```python
-from src.engine.monte_carlo import run_simulation, _SERVER_CACHE
+from src.engine.monte_carlo import MonteCarloSimulator
 
 # Run simulation (defaults to 10-year lookback, 1000 paths, 8-year horizon)
-run_simulation(filepath="tracks.xlsx", max_history_years=10.0, n_sim=2000, horizon=8.0)
+simulator = MonteCarloSimulator(filepath="tracks.xlsx")
+simulator.prepare_data()
+simulator.simulate(seed=42)
 
-# Retrieve generated parameters from cache
-paths = _SERVER_CACHE["paths"]
-dt = _SERVER_CACHE["params"]["dt"]
-index_names = _SERVER_CACHE["index_names"]
+paths = simulator.paths
+index_names = simulator.index_names
 ```
 
 ### Step 3: Structuring the basket
 Select and configure the structured products you want to include in the optimization universe. You can use preset configurations or define custom dictionaries.
 
 ```python
-from src.engine.products_config import get_default_preset
+from src.engine.products_config import ProductFactory
+
+factory = ProductFactory(available_indices=index_names)
 
 product_configs = [
-    get_default_preset("p1", index="¨SP500TR", available_indices=index_names), # Step-down Autocall
-    get_default_preset("p2", available_indices=index_names), # ATM Autocall
-    get_default_preset("p3", available_indices=index_names), # Capital Guaranteed
-    get_default_preset("p4", available_indices=index_names), # Delta One Tracker
+    factory.get_preset("p1", index="^RUTTR"), # Step-down Autocall 
+    factory.get_preset("p2", index="^SP500TR"), # Phoenix Autocall 
+    factory.get_preset("p3", index="^SP500TR"), # Capital Guaranteed 
+    factory.get_preset("p4", index="^RUTTR"), # Delta 1 Tracker
 ]
 ```
 
@@ -96,18 +98,24 @@ Pass the simulated paths and product configurations into the optimizer. Key para
 - irr_metric: Determines if portfolio expected IRR is calculated via the mean or median of scenario IRRs.
 
 ```python
-from src.optimization.optimizer import run_basket_optimization
+engine = CashflowEngine(factory=factory)
+    
+optimizer = BasketOptimizer(
+    cashflow_engine=engine,
+    n_combinations=n_combinations,
+    cvar_level=cvar_level,
+    seed=seed,
+    irr_band=irr_band
+)
 
-results = run_basket_optimization(
+results = optimizer.optimize(
     product_configs=product_configs,
     paths=paths,
     dt=dt,
     index_names=index_names,
-    n_combinations=5000,            # Number of random Dirichlet weights to test
-    cvar_level=0.01,                # 99% CVaR optimization
-    irr_targets=[0.05, 0.06, 0.07, 0.08, 0.09, 0.10], 
-    irr_band=0.001,                 # +/- 10 bps tolerance around target
-    seed=42
+    irr_targets=irr_targets,
+    n_products_per_basket=n_products_per_basket,
+    irr_metric=irr_metric
 )
 ```
 
