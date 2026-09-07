@@ -8,9 +8,10 @@ from loguru import logger
 from pathlib import Path
 
 # Local module imports
-from src.engine.monte_carlo import run_simulation, _SERVER_CACHE
-from src.engine.products_config import get_default_preset
-from src.optimization.optimizer import run_basket_optimization
+from src.engine.monte_carlo import MonteCarloSimulator
+from src.engine.products_config import ProductFactory
+from src.engine.run_cashflows import CashflowEngine   
+from src.optimization.optimizer import BasketOptimizer
 from src.visualization.plots import (
     plot_product_irr_distributions,
     plot_cvar_efficient_frontier,
@@ -31,32 +32,42 @@ def main() -> None:
     # Optimization constraints
     n_combinations = 1000
     cvar_level = 0.01
-    irr_targets = [i / 100.0 for i in range(5, 15)]  # Target IRRs from 5% to 14%
+    irr_targets = [i / 100.0 for i in range(4, 11)]  # Target IRRs from 4% to 10%
     irr_band = 0.001
     seed = 42
-    n_products_per_basket = 5
+    n_products_per_basket = 4
     irr_metric = "median"
 
     # 2. Monte Carlo Simulation Engine
     logger.info("Initializing Monte Carlo simulation engine...")
-    run_simulation(filepath=tracks_path)
     
-    paths = _SERVER_CACHE["paths"]
-    dt = _SERVER_CACHE["params"]["dt"]
-    index_names = _SERVER_CACHE["index_names"]
-    stats_dict = _SERVER_CACHE["stats_dict"]
-    corr_df = _SERVER_CACHE["corr_df"]
+    # Instantiate the class and run the data preparation and simulation
+    simulator = MonteCarloSimulator(filepath=tracks_path)
+    simulator.prepare_data()
+    simulator.simulate(seed=seed)
+    
+    # Safely extract variables from the instance instead of the global cache
+    paths = simulator.paths
+    dt = 1.0 / simulator.trading_days
+    index_names = simulator.index_names
+    stats_dict = simulator.stats_dict
+    corr_df = simulator.corr_df
     
     # 3. Product Configuration Parsing
     logger.info("Loading structured product configurations...")
-    # Load stuctured product configuration presets
+    
+    # Initialize the factory with the indices available from the simulation
+    factory = ProductFactory(available_indices=index_names)
+    
+    # Load structured product configuration presets via the factory
     product_configs = [
-        get_default_preset("p1", index=None, available_indices=index_names),
-        get_default_preset("p2", index=None, available_indices=index_names),
-        get_default_preset("p3", index=None, available_indices=index_names),
-        get_default_preset("p4", index=None, available_indices=index_names),
+        factory.get_preset("p1", index_names[1]),
+        factory.get_preset("p2", index_names[0]),
+        factory.get_preset("p3", index_names[0]),
+        factory.get_preset("p4", index_names[1]),
     ]
-    # Or create your own structured product
+    
+    # Create your own custom structured product
     p5 = {
         "name": "P5 - Phoenix Autocall",
         "type": "autocall",
@@ -76,22 +87,37 @@ def main() -> None:
         "capital_barrier_type": "european",
         "notional": 1.0,
     }
-    product_configs.append(p5)
+    
+    # Validate the custom product before adding it to the optimization pool
+    is_valid, msg = factory.validate_config(p5)
+    if not is_valid:
+        logger.error(f"Configuration error for P5: {msg}")
+        raise ValueError(f"Failed to validate P5: {msg}")
+        
+    # product_configs.append(p5)
 
     # 4. Basket Optimization Execution
     logger.info("Executing Conditional Value-at-Risk (CVaR) basket optimization...")
-    results = run_basket_optimization(
+    
+    # Instantiate the Cashflow Engine with the Factory
+    engine = CashflowEngine(factory=factory)
+    
+    optimizer = BasketOptimizer(
+        cashflow_engine=engine,
+        n_combinations=n_combinations,
+        cvar_level=cvar_level,
+        seed=seed,
+        irr_band=irr_band
+    )
+    
+    results = optimizer.optimize(
         product_configs=product_configs,
         paths=paths,
         dt=dt,
         index_names=index_names,
-        n_combinations=n_combinations,
-        n_products_per_basket=n_products_per_basket,
-        irr_metric=irr_metric,
-        cvar_level=cvar_level,
-        seed=seed,
         irr_targets=irr_targets,
-        irr_band=irr_band,
+        n_products_per_basket=n_products_per_basket,
+        irr_metric=irr_metric
     )
 
     # 5. Data Visualization Generation
@@ -128,18 +154,8 @@ def main() -> None:
     fig_distributions.show()
     fig_frontier.show()
     fig_composition.show()
-
-    # 6. Academic Output Export
-    logger.info("Exporting high-resolution figures for academic publication...")
-    output_directory.mkdir(parents=True, exist_ok=True)
     
-    fig_sim_paths.write_image(output_directory / "fig_simulated_paths.pdf")
-    fig_corr_matrix.write_image(output_directory / "fig_correlation_matrix.pdf")
-    fig_distributions.write_image(output_directory / "fig_standalone_distributions.pdf")
-    fig_frontier.write_image(output_directory / "fig_efficient_frontier.pdf")
-    fig_composition.write_image(output_directory / "fig_basket_composition.pdf")
-    
-    logger.info("Optimization pipeline completed successfully. Figures saved to /%s", output_directory.name)
+    logger.info("Optimization pipeline completed successfully.")
 
 
 if __name__ == "__main__":
